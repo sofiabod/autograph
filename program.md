@@ -12,15 +12,16 @@ To set up a new experiment, work with the user to:
    - `README.md` — repository context.
    - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
    - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
+4. **Verify data exists**: Check that data has been set up on modal. If not, tell the human to run `modal run run_modal.py --setup`.
 5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+6. **Initialize experiment_log.jsonl**: Create an empty `experiment_log.jsonl` file. This is where you will log your reasoning for each experiment.
+7. **Confirm and go**: Confirm setup looks good.
 
 Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+Each experiment runs on a single GPU via Modal. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it as: `modal run run_modal.py`.
 
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
@@ -29,6 +30,7 @@ Each experiment runs on a single GPU. The training script runs for a **fixed tim
 - Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
 - Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
 - Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+- **NEVER push to remote.** No `git push`, no `git push --force`, no pushing of any kind. Everything stays local.
 
 **The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
 
@@ -87,6 +89,74 @@ c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
 d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 ```
 
+## Logging reasoning
+
+In addition to `results.tsv`, you MUST log your decision-making to `experiment_log.jsonl` — one JSON object per line, appended after each experiment. This is how the human reviews your thought process and builds a knowledge graph from your research.
+
+Each entry must have these fields:
+
+```json
+{
+  "experiment_id": 1,
+  "commit": "a1b2c3d",
+  "timestamp": "2026-03-11T22:30:00",
+  "parent_id": 0,
+  "builds_on": [0],
+  "hypothesis": "increasing matrix LR from 0.04 to 0.06 should speed up convergence since current training curve shows slow initial progress",
+  "change_summary": "MATRIX_LR 0.04 -> 0.06",
+  "category": "hyperparameter",
+  "components": ["optimizer", "learning_rate"],
+  "parameters_changed": {"MATRIX_LR": {"from": 0.04, "to": 0.06}},
+  "val_bpb": 0.993200,
+  "baseline_bpb": 0.997900,
+  "delta_bpb": -0.004700,
+  "memory_gb": 44.2,
+  "status": "keep",
+  "reasoning": "val_bpb improved by 0.0047. the higher LR helped convergence within the 5-min budget without instability. keeping.",
+  "insights": [
+    "higher matrix LR improves convergence within 5-min budget",
+    "no instability at 0.06 — room to push further"
+  ],
+  "contradicts": [],
+  "supports": [],
+  "tags": ["learning_rate", "convergence", "muon"],
+  "next_idea": "try increasing depth from 8 to 10 to see if more layers help given the faster convergence"
+}
+```
+
+Field descriptions:
+
+**identity & lineage** (for building the graph):
+- **experiment_id**: sequential counter starting at 1 (0 = baseline)
+- **commit**: short git hash
+- **timestamp**: ISO 8601 timestamp
+- **parent_id**: the experiment this directly branched from (the commit you started with)
+- **builds_on**: list of experiment_ids whose results informed this hypothesis
+
+**what changed**:
+- **hypothesis**: what you expect to happen and why, BEFORE running
+- **change_summary**: concise diff description (what changed, old value -> new value)
+- **category**: one of `hyperparameter`, `architecture`, `optimizer`, `training_loop`, `simplification`, `combination`, `rollback`
+- **components**: list of model/training components touched (e.g. `["attention", "window_size"]`, `["mlp", "activation"]`, `["optimizer", "learning_rate"]`, `["model_size", "depth"]`)
+- **parameters_changed**: dict of parameter names with `{"from": old, "to": new}` values
+
+**results**:
+- **val_bpb**: result (0.0 for crashes)
+- **baseline_bpb**: the current best val_bpb you're comparing against
+- **delta_bpb**: val_bpb minus baseline_bpb (negative = improvement)
+- **memory_gb**: peak VRAM in GB
+- **status**: `keep`, `discard`, or `crash`
+
+**knowledge** (edges in the graph):
+- **reasoning**: post-experiment analysis — why did it work or not? what did you learn?
+- **insights**: list of discrete lessons learned from this experiment. each insight should be a standalone fact that could be a node in a knowledge graph.
+- **contradicts**: list of experiment_ids whose findings this result contradicts
+- **supports**: list of experiment_ids whose findings this result reinforces
+- **tags**: list of topic tags for clustering related experiments (e.g. `["learning_rate", "convergence"]`, `["architecture", "depth", "scaling"]`)
+- **next_idea**: what you plan to try next based on what you learned
+
+Do NOT commit `experiment_log.jsonl` — leave it untracked by git, same as `results.tsv`.
+
 ## The experiment loop
 
 The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
@@ -94,16 +164,20 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+2. Review your experiment log so far. Think about what you've learned from previous experiments. Formulate a hypothesis for your next change.
+3. Tune `train.py` with an experimental idea by directly hacking the code.
+4. git commit (locally only — NEVER push)
+5. Run the experiment: `modal run run_modal.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
+6. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
+7. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+8. Record the results in `results.tsv` (NOTE: do not commit results.tsv, leave it untracked by git)
+9. Record your full reasoning in `experiment_log.jsonl` (NOTE: do not commit this file either)
+10. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
+11. If val_bpb is equal or worse, you git reset back to where you started
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+
+**NEVER PUSH**: Do not run `git push` under any circumstances. All work stays local. The human will push when they're ready.
 
 **Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
 
