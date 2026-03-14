@@ -18,8 +18,8 @@ AGENTS.md
 # experimental code/artifacts
 dev/
 
-# results file
-results.tsv
+# logs
+run.log
 
 # notes
 notes/
