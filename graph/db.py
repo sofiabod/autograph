@@ -1,11 +1,11 @@
 from neo4j import GraphDatabase
 
-from graph.models.nodes import Experiment, Technique, Hypothesis, Agent
+from graph.models.nodes import Experiment, Technique, Hypothesis, Result, Run, Agent
 from graph.models.edges import BaseEdge
 
 
 class MemgraphClient:
-    """thin wrapper around memgraph via bolt protocol."""
+    # thin wrapper around memgraph via bolt protocol
 
     def __init__(self, uri: str = "bolt://localhost:7687", auth: tuple | None = None):
         self._driver = GraphDatabase.driver(uri, auth=auth or ("", ""))
@@ -27,7 +27,6 @@ class MemgraphClient:
     # -- schema --
 
     def create_indexes(self):
-        """create indexes for fast lookups."""
         queries = [
             "CREATE INDEX ON :Experiment(experiment_id)",
             "CREATE INDEX ON :Experiment(commit)",
@@ -35,18 +34,19 @@ class MemgraphClient:
             "CREATE INDEX ON :Technique(name)",
             "CREATE INDEX ON :Agent(name)",
             "CREATE INDEX ON :Hypothesis(id)",
+            "CREATE INDEX ON :Result(id)",
+            "CREATE INDEX ON :Run(name)",
         ]
         for q in queries:
             try:
                 self._run(q)
             except Exception:
-                pass  # index already exists
+                pass
 
     def drop_all(self):
-        """clear the entire graph."""
         self._run("MATCH (n) DETACH DELETE n")
 
-    # -- nodes --
+    # -- create nodes --
 
     def create_experiment(self, exp: Experiment) -> str:
         query = """
@@ -145,14 +145,17 @@ class MemgraphClient:
     def create_hypothesis(self, hyp: Hypothesis) -> str:
         query = """
         CREATE (h:Hypothesis {
-            id: $id, text: $text, debate_rounds: $debate_rounds,
-            challenger_agreed: $challenger_agreed, winning_argument: $winning_argument
+            id: $id, text: $text, status: $status, category: $category,
+            debate_rounds: $debate_rounds, challenger_agreed: $challenger_agreed,
+            winning_argument: $winning_argument
         })
         RETURN h.id AS id
         """
         params = {
             "id": str(hyp.id),
             "text": hyp.text,
+            "status": hyp.status.value,
+            "category": hyp.category.value,
             "debate_rounds": hyp.debate_rounds,
             "challenger_agreed": hyp.challenger_agreed,
             "winning_argument": hyp.winning_argument,
@@ -160,10 +163,46 @@ class MemgraphClient:
         rows = self._run(query, params)
         return rows[0]["id"]
 
+    def create_result(self, res: Result) -> str:
+        query = """
+        CREATE (r:Result {
+            id: $id, text: $text, val_bpb: $val_bpb,
+            delta: $delta, kept: $kept, category: $category
+        })
+        RETURN r.id AS id
+        """
+        params = {
+            "id": str(res.id),
+            "text": res.text,
+            "val_bpb": res.val_bpb,
+            "delta": res.delta,
+            "kept": res.kept,
+            "category": res.category.value,
+        }
+        rows = self._run(query, params)
+        return rows[0]["id"]
+
+    def create_run(self, run: Run) -> str:
+        query = """
+        CREATE (r:Run {
+            id: $id, name: $name, total_experiments: $total_experiments,
+            best_val_bpb: $best_val_bpb, keep_count: $keep_count
+        })
+        RETURN r.id AS id
+        """
+        params = {
+            "id": str(run.id),
+            "name": run.name,
+            "total_experiments": run.total_experiments,
+            "best_val_bpb": run.best_val_bpb,
+            "keep_count": run.keep_count,
+        }
+        rows = self._run(query, params)
+        return rows[0]["id"]
+
     # -- edges --
 
     def create_edge(self, edge: BaseEdge):
-        """create an edge between two nodes by uuid."""
         props = {}
         for field in edge.__class__.model_fields:
             if field not in ("id", "edge_type", "source", "target", "created_at"):
@@ -183,7 +222,7 @@ class MemgraphClient:
         params = {"source": str(edge.source), "target": str(edge.target), **props}
         return self._run(query, params)
 
-    # -- queries --
+    # -- basic lookups --
 
     def get_experiment(self, experiment_id: int) -> dict | None:
         rows = self._run(
@@ -213,7 +252,6 @@ class MemgraphClient:
         return [dict(r["t"]) for r in rows]
 
     def get_neighbors(self, experiment_id: int) -> list[dict]:
-        """get all nodes connected to an experiment."""
         rows = self._run(
             """
             MATCH (e:Experiment {experiment_id: $eid})-[r]-(n)
@@ -224,7 +262,6 @@ class MemgraphClient:
         return rows
 
     def get_technique_stats(self, technique_name: str) -> dict:
-        """get keep/discard stats for a technique."""
         rows = self._run(
             """
             MATCH (e:Experiment)-[:TRIED]->(t:Technique {name: $name})
@@ -234,8 +271,18 @@ class MemgraphClient:
         )
         return {r["status"]: r["count"] for r in rows}
 
+    def count_nodes(self) -> dict:
+        rows = self._run("""
+            MATCH (n)
+            RETURN labels(n)[0] AS label, count(*) AS count
+        """)
+        return {r["label"]: r["count"] for r in rows}
+
+    # -- traversals --
+    # these are multi-hop queries the debate agents use to build arguments
+
     def get_experiment_chain(self, experiment_id: int) -> list[dict]:
-        """follow IMPROVED_FROM edges backwards to find the lineage."""
+        # follow IMPROVED_FROM backwards to find full lineage
         rows = self._run(
             """
             MATCH path = (e:Experiment {experiment_id: $eid})-[:IMPROVED_FROM*]->(ancestor)
@@ -248,9 +295,124 @@ class MemgraphClient:
         )
         return rows
 
-    def count_nodes(self) -> dict:
+    def get_downstream(self, experiment_id: int, depth: int = 5) -> list[dict]:
+        # everything that happened after this experiment
+        rows = self._run(
+            f"""
+            MATCH (e:Experiment {{experiment_id: $eid}})<-[:IMPROVED_FROM|FAILED_FROM*1..{depth}]-(child)
+            RETURN child.experiment_id AS experiment_id, child.val_bpb AS val_bpb,
+                   child.change_summary AS change_summary, child.status AS status
+            ORDER BY child.experiment_id
+            """,
+            {"eid": experiment_id},
+        )
+        return rows
+
+    def get_category_history(self, category: str) -> list[dict]:
+        # all experiments in a category, with their outcomes
+        rows = self._run(
+            """
+            MATCH (e:Experiment {category: $cat})
+            RETURN e.experiment_id AS experiment_id, e.val_bpb AS val_bpb,
+                   e.change_summary AS change_summary, e.status AS status
+            ORDER BY e.experiment_id
+            """,
+            {"cat": category},
+        )
+        return rows
+
+    def get_failed_after(self, experiment_id: int) -> list[dict]:
+        # what failed experiments branched from this one?
+        rows = self._run(
+            """
+            MATCH (e:Experiment {experiment_id: $eid})<-[:FAILED_FROM]-(f:Experiment)
+            RETURN f.experiment_id AS experiment_id, f.val_bpb AS val_bpb,
+                   f.change_summary AS change_summary, f.delta_bpb AS delta_bpb
+            ORDER BY f.experiment_id
+            """,
+            {"eid": experiment_id},
+        )
+        return rows
+
+    def get_technique_history(self, technique_name: str) -> list[dict]:
+        # full history of a technique — every experiment that used it
+        rows = self._run(
+            """
+            MATCH (e:Experiment)-[:TRIED]->(t:Technique {name: $name})
+            RETURN e.experiment_id AS experiment_id, e.val_bpb AS val_bpb,
+                   e.change_summary AS change_summary, e.status AS status
+            ORDER BY e.experiment_id
+            """,
+            {"name": technique_name},
+        )
+        return rows
+
+    def get_contradictions(self) -> list[dict]:
+        # find all result pairs that contradict each other
         rows = self._run("""
-            MATCH (n)
-            RETURN labels(n)[0] AS label, count(*) AS count
+            MATCH (a:Result)-[c:CONTRADICTS]->(b:Result)
+            RETURN a.text AS result_a, b.text AS result_b, c.explanation AS explanation
         """)
-        return {r["label"]: r["count"] for r in rows}
+        return rows
+
+    def get_hypothesis_status(self, status: str = "pending") -> list[dict]:
+        # all hypotheses with a given status
+        rows = self._run(
+            """
+            MATCH (h:Hypothesis {status: $status})
+            RETURN h.id AS id, h.text AS text, h.debate_rounds AS debate_rounds,
+                   h.challenger_agreed AS challenger_agreed
+            """,
+            {"status": status},
+        )
+        return rows
+
+    def get_results_for_experiment(self, experiment_id: int) -> list[dict]:
+        # what did we learn from a specific experiment?
+        rows = self._run(
+            """
+            MATCH (e:Experiment {experiment_id: $eid})-[:PRODUCED]->(r:Result)
+            RETURN r.text AS text, r.val_bpb AS val_bpb, r.delta AS delta, r.kept AS kept
+            """,
+            {"eid": experiment_id},
+        )
+        return rows
+
+    def get_run_experiments(self, run_name: str) -> list[dict]:
+        # all experiments in a batch run
+        rows = self._run(
+            """
+            MATCH (e:Experiment)-[:PART_OF]->(r:Run {name: $name})
+            RETURN e.experiment_id AS experiment_id, e.val_bpb AS val_bpb,
+                   e.change_summary AS change_summary, e.status AS status
+            ORDER BY e.experiment_id
+            """,
+            {"name": run_name},
+        )
+        return rows
+
+    def get_hypothesis_chain(self, hypothesis_id: str) -> list[dict]:
+        # follow REFINES edges to see how an idea evolved
+        rows = self._run(
+            """
+            MATCH path = (h:Hypothesis {id: $hid})-[:REFINES*]->(ancestor:Hypothesis)
+            UNWIND nodes(path) AS n
+            RETURN DISTINCT n.id AS id, n.text AS text, n.status AS status
+            """,
+            {"hid": hypothesis_id},
+        )
+        return rows
+
+    def search_experiments(self, keyword: str) -> list[dict]:
+        # fuzzy search on change_summary
+        rows = self._run(
+            """
+            MATCH (e:Experiment)
+            WHERE e.change_summary CONTAINS $kw
+            RETURN e.experiment_id AS experiment_id, e.val_bpb AS val_bpb,
+                   e.change_summary AS change_summary, e.status AS status
+            ORDER BY e.experiment_id
+            """,
+            {"kw": keyword},
+        )
+        return rows
