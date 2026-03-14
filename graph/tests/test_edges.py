@@ -1,7 +1,5 @@
 from uuid import uuid4
 
-import pytest
-
 from graph.models.edges import (
     Tried,
     ImprovedFrom,
@@ -14,6 +12,12 @@ from graph.models.edges import (
     RanOn,
     BeatGlobal,
     BeatOwn,
+    Tested,
+    Produced,
+    Challenged,
+    PartOf,
+    Contradicts,
+    Refines,
 )
 from graph.models.types import EdgeType
 
@@ -102,9 +106,65 @@ class TestBeatOwn:
         assert e.improvement == 0.086
 
 
+# --- debate edges ---
+
+class TestTested:
+    def test_create(self):
+        e = Tested(source=SRC, target=TGT)
+        assert e.edge_type == EdgeType.tested
+
+
+class TestProduced:
+    def test_create(self):
+        e = Produced(source=SRC, target=TGT)
+        assert e.edge_type == EdgeType.produced
+
+
+class TestChallenged:
+    def test_create(self):
+        e = Challenged(source=SRC, target=TGT, reason="we tried this twice and it failed both times")
+        assert e.edge_type == EdgeType.challenged
+        assert e.reason == "we tried this twice and it failed both times"
+        assert e.round == 1
+
+    def test_second_round(self):
+        e = Challenged(source=SRC, target=TGT, reason="still not convinced", round=2)
+        assert e.round == 2
+
+
+class TestPartOf:
+    def test_create(self):
+        e = PartOf(source=SRC, target=TGT)
+        assert e.edge_type == EdgeType.part_of
+
+
+class TestContradicts:
+    def test_create(self):
+        e = Contradicts(
+            source=SRC, target=TGT,
+            explanation="weight decay helped at 0.15 but hurt at 0.2 — non-monotonic",
+        )
+        assert e.edge_type == EdgeType.contradicts
+        assert "non-monotonic" in e.explanation
+
+
+class TestRefines:
+    def test_create(self):
+        e = Refines(source=SRC, target=TGT, based_on_result="token shifting worked, try shifting fewer channels")
+        assert e.edge_type == EdgeType.refines
+        assert "token shifting" in e.based_on_result
+
+
+# --- shared contract ---
+
 class TestAllEdgesHaveSourceTarget:
     def test_shared_fields(self):
-        for cls in [Tried, ImprovedFrom, FailedFrom, MotivatedBy, Invalidates, CorrelatedWith, LedTo, RanBy, RanOn, BeatGlobal, BeatOwn]:
+        all_edges = [
+            Tried, ImprovedFrom, FailedFrom, MotivatedBy, Invalidates,
+            CorrelatedWith, LedTo, RanBy, RanOn, BeatGlobal, BeatOwn,
+            Tested, Produced, Challenged, PartOf, Contradicts, Refines,
+        ]
+        for cls in all_edges:
             e = cls(source=SRC, target=TGT)
             assert e.source == SRC
             assert e.target == TGT

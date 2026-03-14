@@ -13,4 +13,10 @@ from graph.models.edges import (
     RanOn,
     BeatGlobal,
     BeatOwn,
+    Tested,
+    Produced,
+    Challenged,
+    PartOf,
+    Contradicts,
+    Refines,
 )

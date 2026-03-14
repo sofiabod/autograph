@@ -1,4 +1,3 @@
-
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -8,7 +7,8 @@ from graph.models.types import EdgeType
 
 
 class BaseEdge(BaseModel):
-    """shared fields for all edges."""
+    # every edge has a source, target, and type
+
 
     id: UUID = Field(default_factory=uuid4)
     edge_type: EdgeType
@@ -17,76 +17,128 @@ class BaseEdge(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+# how experiments relate to each other. graph only grows, never shrinks.
+
 class Tried(BaseEdge):
-    """experiment used a technique."""
+    # experiment used a technique
 
     edge_type: EdgeType = EdgeType.tried
     was_novel: bool = False
 
 
+
 class ImprovedFrom(BaseEdge):
-    """experiment improved on a parent."""
+    
+    # beat the parent it branched from
 
     edge_type: EdgeType = EdgeType.improved_from
     delta_val_bpb: float = 0.0
 
 
 class FailedFrom(BaseEdge):
-    """experiment failed to improve on a parent."""
+    # tried to improve on parent but it was worse
 
     edge_type: EdgeType = EdgeType.failed_from
     delta_val_bpb: float = 0.0
 
 
-class MotivatedBy(BaseEdge):
-    """experiment was motivated by a hypothesis."""
-
-    edge_type: EdgeType = EdgeType.motivated_by
-
-
-class Invalidates(BaseEdge):
-    """one technique invalidates another."""
-
-    edge_type: EdgeType = EdgeType.invalidates
-    condition: str = ""
-
-
-class CorrelatedWith(BaseEdge):
-    """two techniques tend to succeed together."""
-
-    edge_type: EdgeType = EdgeType.correlated_with
-    joint_success_rate: float = 0.0
-
-
 class LedTo(BaseEdge):
-    """reasoning chain between experiments."""
+    # why one experiment led to the next
 
     edge_type: EdgeType = EdgeType.led_to
     rationale: str = ""
     next_idea: str = ""
 
 
+# what we learned, not just what we did
+
+class MotivatedBy(BaseEdge):
+    # why we ran this
+
+    edge_type: EdgeType = EdgeType.motivated_by
+
+
+class Tested(BaseEdge):
+    # this run was testing that hypothesis
+
+    edge_type: EdgeType = EdgeType.tested
+
+
+class Produced(BaseEdge):
+    # what we learned from running it
+
+    edge_type: EdgeType = EdgeType.produced
+
+
+class Contradicts(BaseEdge):
+    # two results that disagree
+
+    edge_type: EdgeType = EdgeType.contradicts
+    explanation: str = ""
+
+
+# debate — proposer vs challenger
+
+class Challenged(BaseEdge):
+    # challenger's argument against running this hypothesis
+
+    edge_type: EdgeType = EdgeType.challenged
+    reason: str = ""
+    round: int = 1
+
+
+class Refines(BaseEdge):
+    # updated hypothesis after seeing new evidence
+
+    edge_type: EdgeType = EdgeType.refines
+    based_on_result: str = ""
+
+
+# infra — who ran what, where
+
 class RanBy(BaseEdge):
-    """experiment was run by an agent."""
+   # which agent ...
 
     edge_type: EdgeType = EdgeType.ran_by
 
 
 class RanOn(BaseEdge):
-    """experiment ran on a specific gpu."""
+    # gpu
 
     edge_type: EdgeType = EdgeType.ran_on
 
 
+class PartOf(BaseEdge):
+    # groups experiments into overnight batch sessions
+
+    edge_type: EdgeType = EdgeType.part_of
+
+
 class BeatGlobal(BaseEdge):
-    """experiment beat the previous global best."""
+    # new global best across all agents
 
     edge_type: EdgeType = EdgeType.beat_global
     improvement: float = 0.0
 
 
 class BeatOwn(BaseEdge):
-    """experiment beat the agent's previous best."""
+    # new personal best for this agent
 
     edge_type: EdgeType = EdgeType.beat_own
     improvement: float = 0.0
+
+
+# technique interactions
+
+class Invalidates(BaseEdge):
+    # one technique makes the other worse
+
+    edge_type: EdgeType = EdgeType.invalidates
+    condition: str = ""
+
+
+class CorrelatedWith(BaseEdge):
+    # these techniques tend to work well together
+
+    edge_type: EdgeType = EdgeType.correlated_with
+    joint_success_rate: float = 0.0
