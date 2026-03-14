@@ -227,6 +227,28 @@ def _build_proposer_context(client: MemgraphClient) -> str:
 
     best_str = f"#{best['experiment_id']} val_bpb={best['val_bpb']:.6f} — {best['change_summary']}" if best else "none"
 
+    # previous debates so we don't repeat ourselves
+    prev_debates = client._run("""
+        MATCH (d:DebateLog)
+        RETURN d.change_summary AS change, d.run_decision AS ran,
+               d.confidence AS conf, d.reasoning AS reason
+        ORDER BY d.created_at DESC
+    """)
+    prev_debates_str = "\n".join(
+        f"  {'ran' if d['ran'] else 'skipped'} (conf={d['conf']:.1f}): {d['change']} — {d['reason'][:100]}"
+        for d in prev_debates
+    ) if prev_debates else "none"
+
+    # rejected hypotheses — things the challenger killed
+    rejected = client._run("""
+        MATCH (h:Hypothesis {status: 'rejected'})
+        RETURN h.text AS text
+    """)
+    rejected_str = "\n".join(
+        f"  {r['text'][:100]}"
+        for r in rejected
+    ) if rejected else "none"
+
     return PROPOSER_INITIAL.format(
         best=best_str,
         recent_keeps=recent_keeps_str or "none",
@@ -234,6 +256,8 @@ def _build_proposer_context(client: MemgraphClient) -> str:
         technique_stats=tech_stats_str or "none",
         contradictions=contradictions_str or "none",
         lineage=lineage_str or "none",
+        previous_debates=prev_debates_str,
+        rejected_hypotheses=rejected_str,
     )
 
 

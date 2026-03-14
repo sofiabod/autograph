@@ -9,7 +9,7 @@ from graph.debate.debate import _guess_category, DebateRound, DebateResult
 class TestDebateConfig:
     def test_defaults(self):
         c = DebateConfig(api_key="test")
-        assert c.proposer_model == "anthropic/claude-sonnet-4-20250514"
+        assert c.proposer_model == "anthropic/claude-sonnet-4"
         assert c.challenger_model == "openai/gpt-4o"
         assert c.max_rounds == 2
         assert c.proposer_temperature == 0.7
@@ -107,7 +107,7 @@ class TestAgentInit:
     def test_proposer_init(self):
         c = DebateConfig(api_key="test")
         p = Proposer(c)
-        assert p.model == "anthropic/claude-sonnet-4-20250514"
+        assert p.model == "anthropic/claude-sonnet-4"
         assert p.history == []
 
     def test_challenger_init(self):

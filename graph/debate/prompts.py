@@ -36,7 +36,14 @@ contradictions (findings that disagree):
 lineage of best (the chain of improvements that got us here):
 {lineage}
 
-propose the next experiment to run. be specific about what to change in train.py."""
+previous debates (what was already proposed, don't repeat these):
+{previous_debates}
+
+rejected hypotheses (the challenger killed these, don't propose them again):
+{rejected_hypotheses}
+
+propose the next experiment to run. be specific about what to change in train.py.
+do NOT propose anything that appears in the previous debates or rejected hypotheses above."""
 
 PROPOSER_REBUTTAL = """the challenger raised these objections:
 
