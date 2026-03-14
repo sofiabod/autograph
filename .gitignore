@@ -21,5 +21,8 @@ dev/
 # logs
 run.log
 
+# secrets
+.env
+
 # notes
 notes/
