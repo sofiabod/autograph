@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from graph.models.types import Category, GPUType, Status
+from graph.models.types import Category, GPUType, HypothesisStatus, Status
 
 
 class Experiment(BaseModel):
@@ -75,14 +75,40 @@ class Technique(BaseModel):
 
 
 class Hypothesis(BaseModel):
-    """a proposed idea, optionally from a debate."""
+    """a proposed idea, pre-run. status tracks if it was confirmed or rejected."""
 
     id: UUID = Field(default_factory=uuid4)
     text: str
+    status: HypothesisStatus = HypothesisStatus.pending
+    category: Category = Category.hyperparameter
     debate_rounds: int = 0
     challenger_agreed: bool = False
     winning_argument: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class Result(BaseModel):
+    """post-run finding. what we actually learned from an experiment."""
+
+    id: UUID = Field(default_factory=uuid4)
+    text: str
+    val_bpb: float
+    delta: float = 0.0
+    kept: bool = False
+    category: Category = Category.hyperparameter
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class Run(BaseModel):
+    """one batch session (e.g. overnight run). groups experiments together."""
+
+    id: UUID = Field(default_factory=uuid4)
+    name: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    ended_at: datetime | None = None
+    total_experiments: int = 0
+    best_val_bpb: float = float("inf")
+    keep_count: int = 0
 
 
 class Agent(BaseModel):

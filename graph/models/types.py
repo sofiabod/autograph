@@ -7,6 +7,12 @@ class Status(str, Enum):
     crash = "crash"
 
 
+class HypothesisStatus(str, Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    rejected = "rejected"
+
+
 class Category(str, Enum):
     normalization = "normalization"
     attention = "attention"
@@ -30,6 +36,12 @@ class EdgeType(str, Enum):
     ran_on = "RAN_ON"
     beat_global = "BEAT_GLOBAL"
     beat_own = "BEAT_OWN"
+    tested = "TESTED"
+    produced = "PRODUCED"
+    contradicts = "CONTRADICTS"
+    part_of = "PART_OF"
+    challenged = "CHALLENGED"
+    refines = "REFINES"
 
 
 class GPUType(str, Enum):

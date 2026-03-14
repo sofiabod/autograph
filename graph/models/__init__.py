@@ -1,5 +1,5 @@
-from graph.models.types import Status, Category, EdgeType, GPUType
-from graph.models.nodes import Experiment, Technique, Hypothesis, Agent
+from graph.models.types import Status, HypothesisStatus, Category, EdgeType, GPUType
+from graph.models.nodes import Experiment, Technique, Hypothesis, Result, Run, Agent
 from graph.models.edges import (
     BaseEdge,
     Tried,
