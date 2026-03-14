@@ -2,8 +2,8 @@ from uuid import UUID
 
 import pytest
 
-from graph.models.nodes import Experiment, Technique, Hypothesis, Agent
-from graph.models.types import Status, Category
+from graph.models.nodes import Experiment, Technique, Hypothesis, Result, Run, Agent
+from graph.models.types import Status, Category, HypothesisStatus
 
 
 class TestExperiment:
@@ -72,18 +72,52 @@ class TestTechnique:
 class TestHypothesis:
     def test_create(self):
         h = Hypothesis(text="shifting tokens should help because it adds local context")
+        assert h.status == HypothesisStatus.pending
         assert h.debate_rounds == 0
         assert h.challenger_agreed is False
 
-    def test_debated(self):
+    def test_confirmed(self):
+        h = Hypothesis(text="try higher lr", status=HypothesisStatus.confirmed)
+        assert h.status == HypothesisStatus.confirmed
+
+    def test_rejected(self):
         h = Hypothesis(
-            text="try higher lr",
+            text="try swiglu",
+            status=HypothesisStatus.rejected,
             debate_rounds=2,
-            challenger_agreed=True,
-            winning_argument="worked 3 times before",
+            challenger_agreed=False,
+            winning_argument="swiglu failed 3 times already",
         )
-        assert h.debate_rounds == 2
-        assert h.challenger_agreed is True
+        assert h.status == HypothesisStatus.rejected
+        assert h.winning_argument == "swiglu failed 3 times already"
+
+
+class TestResult:
+    def test_create(self):
+        r = Result(text="weight decay on embeddings improved val_bpb by 0.003", val_bpb=0.974, delta=-0.003, kept=True)
+        assert r.kept is True
+        assert r.delta == -0.003
+
+    def test_discard_result(self):
+        r = Result(text="swiglu activation was worse", val_bpb=0.988, delta=0.005, kept=False)
+        assert r.kept is False
+
+    def test_category(self):
+        r = Result(text="token shifting helps", val_bpb=0.968, category=Category.architecture)
+        assert r.category == Category.architecture
+
+
+class TestRun:
+    def test_create(self):
+        r = Run(name="baseline-overnight-1")
+        assert r.total_experiments == 0
+        assert r.best_val_bpb == float("inf")
+        assert r.keep_count == 0
+
+    def test_with_stats(self):
+        r = Run(name="run-3", total_experiments=50, best_val_bpb=0.968, keep_count=8)
+        assert r.total_experiments == 50
+        assert r.keep_count == 8
 
 
 class TestAgent:

@@ -282,12 +282,13 @@ class MemgraphClient:
     # these are multi-hop queries the debate agents use to build arguments
 
     def get_experiment_chain(self, experiment_id: int) -> list[dict]:
-        # follow IMPROVED_FROM backwards to find full lineage
+        # follow IMPROVED_FROM edges to find full lineage (child->parent direction)
         rows = self._run(
             """
-            MATCH path = (e:Experiment {experiment_id: $eid})-[:IMPROVED_FROM*]->(ancestor)
+            MATCH path = (start:Experiment {experiment_id: $eid})-[:IMPROVED_FROM*0..50]->(ancestor)
             UNWIND nodes(path) AS n
-            RETURN DISTINCT n.experiment_id AS experiment_id, n.val_bpb AS val_bpb,
+            WITH DISTINCT n
+            RETURN n.experiment_id AS experiment_id, n.val_bpb AS val_bpb,
                    n.change_summary AS change_summary, n.status AS status
             ORDER BY n.experiment_id
             """,
