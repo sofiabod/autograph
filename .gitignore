@@ -1,26 +1,5 @@
-# python-generated files
+node_modules/
+.next/
+run.log
+experiment_log.jsonl
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# virtual environments
-.venv
-worktrees/
-results/
-queue/
-
-# agent prompt files (generated per-session by launchers)
-CLAUDE.md
-AGENTS.md
-
-# experimental code/artifacts
-dev/
-
-# results file
-results.tsv
-
-# notes
-notes/
