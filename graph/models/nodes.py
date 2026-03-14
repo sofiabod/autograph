@@ -85,6 +85,8 @@ class Hypothesis(BaseModel):
     challenger_agreed: bool = False
     winning_argument: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    valid_from: datetime | None = None  # when this hypothesis became active
+    valid_until: datetime | None = None  # when it was confirmed/rejected/superseded
 
 
 class Result(BaseModel):
@@ -97,6 +99,9 @@ class Result(BaseModel):
     kept: bool = False
     category: Category = Category.hyperparameter
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    valid_from: datetime | None = None  # when this finding was established
+    valid_until: datetime | None = None  # when it was overturned (None = still holds)
+    superseded_by: UUID | None = None  # which result replaced this one
 
 
 class Run(BaseModel):
