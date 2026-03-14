@@ -20,6 +20,10 @@ interface GraphNode {
   reasoning?: string
   hypothesis?: string
   name?: string
+  text?: string
+  kept?: boolean
+  run_decision?: boolean
+  confidence?: number
   x?: number
   y?: number
 }
@@ -31,6 +35,11 @@ interface GraphLink {
   delta_val_bpb?: number
   rationale?: string
   next_idea?: string
+  reason?: string
+  explanation?: string
+  why_it_worked?: string
+  why_it_failed?: string
+  lesson_learned?: string
 }
 
 interface GraphData {
@@ -43,7 +52,11 @@ type Selection =
   | { kind: "link"; data: GraphLink }
   | null
 
-function MetaRow({ label, value }: { label: string; value: string | number | undefined }) {
+// polls memgraph api every N seconds for real-time updates
+const API_URL = "http://127.0.0.1:8000"
+const POLL_INTERVAL = 5000
+
+function MetaRow({ label, value }: { label: string; value: string | number | boolean | undefined }) {
   if (value === undefined || value === "") return null
   return (
     <div style={{ marginBottom: 10 }}>
@@ -51,7 +64,7 @@ function MetaRow({ label, value }: { label: string; value: string | number | und
         {label}
       </div>
       <div style={{ color: "#333", fontSize: 12, marginTop: 2, lineHeight: 1.5 }}>
-        {typeof value === "number" ? value.toFixed(6) : value}
+        {typeof value === "number" ? value.toFixed(6) : typeof value === "boolean" ? (value ? "yes" : "no") : value}
       </div>
     </div>
   )
@@ -61,7 +74,7 @@ function NodePanel({ node }: { node: GraphNode }) {
   if (node.type === "technique") {
     return (
       <>
-        <div style={{ color: "#5b8def", fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+        <div style={{ color: "#ccc", fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
           {node.name}
         </div>
         <MetaRow label="type" value="technique" />
@@ -70,6 +83,57 @@ function NodePanel({ node }: { node: GraphNode }) {
     )
   }
 
+  if (node.type === "hypothesis") {
+    return (
+      <>
+        <div style={{ color: "#e6a23c", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          hypothesis
+        </div>
+        <MetaRow label="text" value={node.text} />
+        <MetaRow label="status" value={node.status} />
+      </>
+    )
+  }
+
+  if (node.type === "result") {
+    return (
+      <>
+        <div style={{ color: node.kept ? "#67c23a" : "#999", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          result
+        </div>
+        <MetaRow label="text" value={node.text} />
+        <MetaRow label="val_bpb" value={node.val_bpb} />
+        <MetaRow label="kept" value={node.kept} />
+      </>
+    )
+  }
+
+  if (node.type === "debate") {
+    return (
+      <>
+        <div style={{ color: "#9b59b6", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          debate
+        </div>
+        <MetaRow label="decision" value={node.run_decision ? "run" : "skip"} />
+        <MetaRow label="change" value={node.change_summary} />
+        <MetaRow label="confidence" value={node.confidence} />
+        <MetaRow label="reasoning" value={node.reasoning} />
+      </>
+    )
+  }
+
+  if (node.type === "agent") {
+    return (
+      <>
+        <div style={{ color: "#e74c3c", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          agent
+        </div>
+        <MetaRow label="name" value={node.name} />
+      </>
+    )
+  }
+
+  // experiment (default)
   return (
     <>
       <div style={{
@@ -95,22 +159,30 @@ function LinkPanel({ link }: { link: GraphLink }) {
   const srcNode = typeof link.source === "string" ? null : link.source
   const tgtNode = typeof link.target === "string" ? null : link.target
 
-  const srcLabel = srcNode?.type === "technique"
-    ? srcNode.name
-    : srcNode ? `#${srcNode.experiment_id}` : "?"
-  const tgtLabel = tgtNode?.type === "technique"
-    ? tgtNode.name
-    : tgtNode ? `#${tgtNode.experiment_id}` : "?"
+  const getLabel = (n: GraphNode | null) => {
+    if (!n) return "?"
+    if (n.type === "technique") return n.name
+    if (n.type === "hypothesis") return "hypothesis"
+    if (n.type === "result") return "result"
+    if (n.type === "debate") return "debate"
+    if (n.type === "agent") return n.name
+    return `#${n.experiment_id}`
+  }
 
   return (
     <>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: "#5b8def" }}>
-        {srcLabel} → {tgtLabel}
+        {getLabel(srcNode)} → {getLabel(tgtNode)}
       </div>
       <MetaRow label="edge type" value={link.edge_type} />
       <MetaRow label="delta_val_bpb" value={link.delta_val_bpb} />
       <MetaRow label="rationale" value={link.rationale} />
       <MetaRow label="next idea" value={link.next_idea} />
+      <MetaRow label="reason" value={link.reason} />
+      <MetaRow label="explanation" value={link.explanation} />
+      <MetaRow label="why it worked" value={link.why_it_worked} />
+      <MetaRow label="why it failed" value={link.why_it_failed} />
+      <MetaRow label="lesson learned" value={link.lesson_learned} />
     </>
   )
 }
@@ -121,18 +193,31 @@ export default function Home() {
   const [timeMax, setTimeMax] = useState<number>(1000)
   const graphRef = useRef<any>(null)
 
-  useEffect(() => {
-    fetch("http://127.0.0.1:8000/graph")
+  const prevCountRef = useRef<number>(0)
+
+  // poll for updates, only re-render if node count changed
+  const fetchGraph = useCallback(() => {
+    fetch(`${API_URL}/graph`)
       .then((r) => r.json())
       .then((d) => {
-        setData(d)
-        const maxId = Math.max(...d.nodes
-          .filter((n: GraphNode) => n.type === "experiment")
-          .map((n: GraphNode) => n.experiment_id ?? 0))
-        setTimeMax(maxId)
+        const newCount = d.nodes.length + d.links.length
+        if (newCount !== prevCountRef.current) {
+          prevCountRef.current = newCount
+          setData(d)
+          const maxId = Math.max(0, ...d.nodes
+            .filter((n: GraphNode) => n.type === "experiment")
+            .map((n: GraphNode) => n.experiment_id ?? 0))
+          setTimeMax(maxId)
+        }
       })
       .catch(console.error)
   }, [])
+
+  useEffect(() => {
+    fetchGraph()
+    const interval = setInterval(fetchGraph, POLL_INTERVAL)
+    return () => clearInterval(interval)
+  }, [fetchGraph])
 
   const [timeSlider, setTimeSlider] = useState<number>(1000)
 
@@ -144,7 +229,8 @@ export default function Home() {
     if (!data) return { nodes: [], links: [] }
 
     const visibleNodes = data.nodes.filter((n) => {
-      if (n.type === "technique") return true
+      // non-experiment nodes always visible
+      if (n.type !== "experiment") return true
       return (n.experiment_id ?? 0) <= timeSlider
     })
 
@@ -160,18 +246,30 @@ export default function Home() {
 
   const nodeColor = useCallback((node: GraphNode) => {
     if (node.type === "technique") return "#ccc"
+    if (node.type === "hypothesis") return node.status === "confirmed" ? "#67c23a" : node.status === "rejected" ? "#e74c3c" : "#e6a23c"
+    if (node.type === "result") return node.kept ? "#67c23a" : "#999"
+    if (node.type === "debate") return "#9b59b6"
+    if (node.type === "agent") return "#e74c3c"
     if (node.status === "keep") return "#5b8def"
     return "#bbb"
   }, [])
 
   const nodeSize = useCallback((node: GraphNode) => {
     if (node.type === "technique") return 2
+    if (node.type === "hypothesis") return 4
+    if (node.type === "result") return 2
+    if (node.type === "debate") return 5
+    if (node.type === "agent") return 4
     if (node.status === "keep") return 6
     return 3
   }, [])
 
   const nodeLabel = useCallback((node: GraphNode) => {
     if (node.type === "technique") return node.name || ""
+    if (node.type === "hypothesis") return `hypothesis: ${(node.text || "").slice(0, 60)}...`
+    if (node.type === "result") return (node.text || "").slice(0, 60)
+    if (node.type === "debate") return `debate: ${node.change_summary || ""}`
+    if (node.type === "agent") return node.name || ""
     return `#${node.experiment_id} ${node.change_summary || ""}`
   }, [])
 
@@ -179,6 +277,10 @@ export default function Home() {
     if (link.edge_type === "IMPROVED_FROM") return "rgba(91, 141, 239, 0.6)"
     if (link.edge_type === "FAILED_FROM") return "rgba(180, 180, 180, 0.3)"
     if (link.edge_type === "LED_TO") return "rgba(91, 141, 239, 0.3)"
+    if (link.edge_type === "CHALLENGED") return "rgba(231, 76, 60, 0.5)"
+    if (link.edge_type === "REFINES") return "rgba(230, 162, 60, 0.5)"
+    if (link.edge_type === "CONTRADICTS") return "rgba(231, 76, 60, 0.6)"
+    if (link.edge_type === "PRODUCED") return "rgba(103, 194, 58, 0.3)"
     return "rgba(200, 200, 200, 0.15)"
   }, [])
 
@@ -186,7 +288,10 @@ export default function Home() {
     if (link.edge_type === "TRIED") return 0.2
     if (link.edge_type === "LED_TO") return 0.6
     if (link.edge_type === "IMPROVED_FROM") return 1.5
-    return 0.8
+    if (link.edge_type === "CHALLENGED") return 1.0
+    if (link.edge_type === "CONTRADICTS") return 1.2
+    if (link.edge_type === "REFINES") return 0.8
+    return 0.5
   }, [])
 
   if (!data) {
@@ -280,7 +385,7 @@ export default function Home() {
         {/* right panel */}
         <div style={panelStyle}>
           <div style={{ color: "#999", fontSize: 10, letterSpacing: 0.5, marginBottom: 12, fontFamily: "Inter, sans-serif" }}>
-            {selection ? `${selection.kind} attributes` : "edge attributes / node attributes data"}
+            {selection ? `${selection.kind} attributes` : "select a node or edge"}
           </div>
           {selection?.kind === "node" && <NodePanel node={selection.data} />}
           {selection?.kind === "link" && <LinkPanel link={selection.data} />}
@@ -317,7 +422,7 @@ export default function Home() {
         />
         <span style={{ fontSize: 11, color: "#666" }}>{timeMax}</span>
         <span style={{ fontSize: 11, color: "#444", marginLeft: 8 }}>
-          slider back in time — showing experiments 0–{timeSlider}
+          experiments 0–{timeSlider}
         </span>
       </div>
     </div>
