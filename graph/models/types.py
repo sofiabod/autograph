@@ -42,6 +42,9 @@ class EdgeType(str, Enum):
     part_of = "PART_OF"
     challenged = "CHALLENGED"
     refines = "REFINES"
+    synthesized_from = "SYNTHESIZED_FROM"
+    supports_synthesis = "SUPPORTS_SYNTHESIS"
+    contradicts_synthesis = "CONTRADICTS_SYNTHESIS"
 
 
 class GPUType(str, Enum):

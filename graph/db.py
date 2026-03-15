@@ -1,6 +1,6 @@
 from neo4j import GraphDatabase
 
-from graph.models.nodes import Experiment, Technique, Hypothesis, Result, Run, Agent
+from graph.models.nodes import Experiment, Technique, Hypothesis, Result, Synthesis, Run, Agent
 from graph.models.edges import BaseEdge
 
 
@@ -36,6 +36,8 @@ class MemgraphClient:
             "CREATE INDEX ON :Hypothesis(id)",
             "CREATE INDEX ON :Result(id)",
             "CREATE INDEX ON :Run(name)",
+            "CREATE INDEX ON :Synthesis(id)",
+            "CREATE INDEX ON :Synthesis(domain)",
         ]
         for q in queries:
             try:
@@ -196,6 +198,27 @@ class MemgraphClient:
             "total_experiments": run.total_experiments,
             "best_val_bpb": run.best_val_bpb,
             "keep_count": run.keep_count,
+        }
+        rows = self._run(query, params)
+        return rows[0]["id"]
+
+    def create_synthesis(self, syn: Synthesis) -> str:
+        query = """
+        CREATE (s:Synthesis {
+            id: $id, text: $text, confidence: $confidence,
+            domain: $domain, category: $category,
+            auto_generated: $auto_generated, source_count: $source_count
+        })
+        RETURN s.id AS id
+        """
+        params = {
+            "id": str(syn.id),
+            "text": syn.text,
+            "confidence": syn.confidence,
+            "domain": syn.domain,
+            "category": syn.category.value,
+            "auto_generated": syn.auto_generated,
+            "source_count": syn.source_count,
         }
         rows = self._run(query, params)
         return rows[0]["id"]
@@ -415,5 +438,40 @@ class MemgraphClient:
             ORDER BY e.experiment_id
             """,
             {"kw": keyword},
+        )
+        return rows
+
+    # -- synthesis queries --
+
+    def get_syntheses(self, domain: str | None = None) -> list[dict]:
+        if domain:
+            rows = self._run(
+                "MATCH (s:Synthesis {domain: $domain}) RETURN s ORDER BY s.confidence DESC",
+                {"domain": domain},
+            )
+        else:
+            rows = self._run("MATCH (s:Synthesis) RETURN s ORDER BY s.confidence DESC")
+        return [dict(r["s"]) for r in rows]
+
+    def get_synthesis_sources(self, synthesis_id: str) -> list[dict]:
+        # what results was this synthesis derived from?
+        rows = self._run(
+            """
+            MATCH (s:Synthesis {id: $sid})-[:SYNTHESIZED_FROM]->(r:Result)
+            RETURN r.text AS text, r.val_bpb AS val_bpb, r.kept AS kept
+            """,
+            {"sid": synthesis_id},
+        )
+        return rows
+
+    def get_synthesis_evidence(self, synthesis_id: str) -> list[dict]:
+        # what experiments support this synthesis?
+        rows = self._run(
+            """
+            MATCH (e:Experiment)-[:SUPPORTS_SYNTHESIS]->(s:Synthesis {id: $sid})
+            RETURN e.experiment_id AS experiment_id, e.val_bpb AS val_bpb,
+                   e.change_summary AS change_summary, e.status AS status
+            """,
+            {"sid": synthesis_id},
         )
         return rows

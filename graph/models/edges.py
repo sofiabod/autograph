@@ -157,3 +157,24 @@ class CorrelatedWith(BaseEdge):
 
     edge_type: EdgeType = EdgeType.correlated_with
     joint_success_rate: float = 0.0
+
+
+# synthesis — connecting findings into higher-level insights
+
+class SynthesizedFrom(BaseEdge):
+    # synthesis was derived from this result
+
+    edge_type: EdgeType = EdgeType.synthesized_from
+
+
+class SupportsSynthesis(BaseEdge):
+    # this experiment provides evidence for a synthesis
+
+    edge_type: EdgeType = EdgeType.supports_synthesis
+
+
+class ContradictsSynthesis(BaseEdge):
+    # this result contradicts a synthesis
+
+    edge_type: EdgeType = EdgeType.contradicts_synthesis
+    explanation: str = ""

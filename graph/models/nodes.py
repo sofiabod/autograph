@@ -104,6 +104,22 @@ class Result(BaseModel):
     superseded_by: UUID | None = None  # which result replaced this one
 
 
+class Synthesis(BaseModel):
+    # higher-level insight derived from combining multiple results
+    # e.g. "weight decay has a sweet spot around 0.1-0.15"
+
+    id: UUID = Field(default_factory=uuid4)
+    text: str
+    confidence: float = 0.0
+    domain: str = "ml"
+    category: Category = Category.hyperparameter
+    auto_generated: bool = False
+    source_count: int = 0  # how many results this was derived from
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+
 class Run(BaseModel):
     """one batch session (e.g. overnight run). groups experiments together."""
 
