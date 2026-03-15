@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""lab cli — query the experiment graph from the terminal."""
+
+import sys
+import json
+import os
+
+# add project root to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from graph.db import MemgraphClient
+
+
+def cmd_context():
+    """current state of the graph — run this at the start of every session."""
+    c = MemgraphClient()
+    counts = c.count_nodes()
+    best = c.get_best()
+    keeps = c.get_keeps()
+
+    print("=== graph state ===")
+    for label, count in sorted(counts.items()):
+        print(f"  {label}: {count}")
+
+    print()
+    if best:
+        print(f"best: #{best['experiment_id']} val_bpb={best['val_bpb']:.6f} — {best['change_summary']}")
+    else:
+        print("best: none")
+
+    print(f"total keeps: {len(keeps)}")
+    if keeps:
+        print(f"keep rate: {len(keeps)}/{counts.get('Experiment', 0)} ({len(keeps)/counts.get('Experiment', 1):.0%})")
+
+    print()
+    print("=== recent keeps ===")
+    for k in keeps[:5]:
+        print(f"  #{k['experiment_id']} {k['val_bpb']:.6f} — {k['change_summary']}")
+
+    # pending hypotheses
+    pending = c.get_hypothesis_status("pending")
+    if pending:
+        print(f"\n=== pending hypotheses ({len(pending)}) ===")
+        for h in pending[:5]:
+            print(f"  {h['text'][:80]}...")
+
+    c.close()
+
+
+def cmd_failures():
+    """recent failures — don't repeat these."""
+    c = MemgraphClient()
+    all_exps = c.get_all_experiments()
+    failures = [e for e in reversed(all_exps) if e["status"] == "discard"][:20]
+
+    print(f"=== recent failures ({len(failures)}) ===")
+    for f in failures:
+        print(f"  #{f['experiment_id']} {f['val_bpb']:.6f} — {f['change_summary']}")
+
+    crashes = [e for e in all_exps if e["status"] == "crash"]
+    if crashes:
+        print(f"\n=== crashes ({len(crashes)}) ===")
+        for cr in crashes:
+            print(f"  #{cr['experiment_id']} — {cr['change_summary']}")
+
+    c.close()
+
+
+def cmd_syntheses():
+    """auto-detected patterns in the graph."""
+    c = MemgraphClient()
+    syntheses = c.get_syntheses()
+
+    if not syntheses:
+        print("no syntheses yet. run: PYTHONPATH=. python graph/synthesize.py")
+        c.close()
+        return
+
+    print(f"=== syntheses ({len(syntheses)}) ===")
+    for s in syntheses:
+        conf = s.get("confidence", 0)
+        print(f"  [{conf:.1f}] {s['text']}")
+
+    c.close()
+
+
+def cmd_hypotheses():
+    """pending ideas from graph pattern detection."""
+    c = MemgraphClient()
+
+    for status in ["pending", "confirmed", "rejected"]:
+        hyps = c.get_hypothesis_status(status)
+        if hyps:
+            print(f"=== {status} ({len(hyps)}) ===")
+            for h in hyps:
+                print(f"  {h['text'][:100]}...")
+            print()
+
+    c.close()
+
+
+def cmd_lineage():
+    """chain of improvements from baseline to best."""
+    c = MemgraphClient()
+    best = c.get_best()
+
+    if not best:
+        print("no experiments yet")
+        c.close()
+        return
+
+    chain = c.get_experiment_chain(best["experiment_id"])
+
+    print(f"=== lineage to best (#{best['experiment_id']}) ===")
+    print(f"=== {len(chain)} improvements ===\n")
+    for i, exp in enumerate(chain):
+        marker = ">>>" if exp["experiment_id"] == best["experiment_id"] else "   "
+        print(f"{marker} #{exp['experiment_id']} {exp['val_bpb']:.6f} — {exp['change_summary']}")
+
+    c.close()
+
+
+def cmd_debate():
+    """run a proposer vs challenger debate."""
+    from graph.debate.config import DebateConfig
+    from graph.debate.debate import run_debate
+
+    config = DebateConfig()
+    if not config.api_key:
+        print("set OPENROUTER_API_KEY in .env")
+        return
+
+    c = MemgraphClient()
+    print("starting debate...\n")
+    result = run_debate(c, config)
+
+    for r in result.rounds:
+        print(f"=== round {r.round_num} ===")
+        print(f"\nproposer:\n{r.proposal[:300]}...")
+        print(f"\nchallenger:\n{r.challenge[:300]}...")
+        if r.rebuttal:
+            print(f"\nrebuttal:\n{r.rebuttal[:300]}...")
+        if r.assessment:
+            print(f"\nassessment:\n{r.assessment[:300]}...")
+        print()
+
+    print("=== decision ===")
+    print(json.dumps(result.decision, indent=2))
+
+    c.close()
+
+
+def cmd_contradictions():
+    """findings that disagree with each other."""
+    c = MemgraphClient()
+    contradictions = c.get_contradictions()
+
+    print(f"=== contradictions ({len(contradictions)}) ===")
+    for ct in contradictions:
+        print(f"  {ct['result_a']}")
+        print(f"    vs {ct['result_b']}")
+        print(f"    why: {ct['explanation']}")
+        print()
+
+    c.close()
+
+
+def cmd_search(keyword: str):
+    """search experiments by keyword."""
+    c = MemgraphClient()
+    results = c.search_experiments(keyword)
+
+    print(f"=== search: '{keyword}' ({len(results)} results) ===")
+    for r in results:
+        print(f"  #{r['experiment_id']} {r['status']} {r['val_bpb']:.6f} — {r['change_summary']}")
+
+    c.close()
+
+
+def cmd_technique(name: str):
+    """full history of a technique."""
+    c = MemgraphClient()
+    history = c.get_technique_history(name)
+    stats = c.get_technique_stats(name)
+
+    print(f"=== {name} ({stats}) ===")
+    for h in history:
+        print(f"  #{h['experiment_id']} {h['status']} {h['val_bpb']:.6f} — {h['change_summary']}")
+
+    c.close()
+
+
+COMMANDS = {
+    "context": (cmd_context, "current graph state"),
+    "failures": (cmd_failures, "recent failures and crashes"),
+    "syntheses": (cmd_syntheses, "auto-detected patterns"),
+    "hypotheses": (cmd_hypotheses, "pending, confirmed, rejected ideas"),
+    "lineage": (cmd_lineage, "improvement chain to best"),
+    "debate": (cmd_debate, "run proposer vs challenger"),
+    "contradictions": (cmd_contradictions, "findings that disagree"),
+    "search": (cmd_search, "search experiments by keyword"),
+    "technique": (cmd_technique, "history of a technique"),
+}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        print("lab — query the experiment graph\n")
+        for name, (_, desc) in COMMANDS.items():
+            print(f"  lab {name:16s} {desc}")
+        print(f"\n  lab search <keyword>")
+        print(f"  lab technique <name>")
+        return
+
+    cmd = sys.argv[1]
+    if cmd not in COMMANDS:
+        print(f"unknown command: {cmd}")
+        print(f"run 'lab help' for usage")
+        return
+
+    fn = COMMANDS[cmd][0]
+
+    if cmd in ("search", "technique"):
+        if len(sys.argv) < 3:
+            print(f"usage: lab {cmd} <argument>")
+            return
+        fn(" ".join(sys.argv[2:]))
+    else:
+        fn()
+
+
+if __name__ == "__main__":
+    main()
