@@ -37,6 +37,9 @@ def _apply_parameters(parameters_changed: dict) -> list[str]:
     if not parameters_changed:
         return []
 
+    # params that must be quoted strings in python
+    STRING_PARAMS = {"WINDOW_PATTERN"}
+
     text = TRAIN_PY.read_text()
     changes = []
 
@@ -49,6 +52,26 @@ def _apply_parameters(parameters_changed: dict) -> list[str]:
         new_val = str(values.get("to", ""))
         if not new_val:
             continue
+
+        # validate: must be a valid python literal (no prose, no sentences)
+        try:
+            compile(f"x = {new_val}", "<check>", "exec")
+        except SyntaxError:
+            # try quoting it if it's a string param
+            if param_upper in STRING_PARAMS:
+                new_val = f'"{new_val}"'
+                try:
+                    compile(f"x = {new_val}", "<check>", "exec")
+                except SyntaxError:
+                    print(f"  skipping {param_upper} — invalid value: {new_val}")
+                    continue
+            else:
+                print(f"  skipping {param_upper} — invalid value: {new_val}")
+                continue
+
+        # preserve quotes on string params if the LLM forgot them
+        if param_upper in STRING_PARAMS and not (new_val.startswith('"') or new_val.startswith("'")):
+            new_val = f'"{new_val}"'
 
         # match lines like: MATRIX_LR = 0.04  or DEPTH = 8  (with optional comment)
         pattern = rf'^({param_upper}\s*=\s*)(.+?)(\s*#.*)?$'
