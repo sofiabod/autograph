@@ -5,11 +5,12 @@ from dataclasses import dataclass, field
 
 from graph.db import MemgraphClient
 from graph.models.nodes import Hypothesis, Agent
-from graph.models.edges import Challenged, Refines
+from graph.models.edges import Refines
 from graph.models.types import HypothesisStatus, Category
 from graph.debate.config import DebateConfig
 from graph.debate.agents import Proposer, Challenger
 from graph.debate.prompts import PROPOSER_INITIAL, CHALLENGER_INITIAL, DECISION_PROMPT
+from graph.ingest import _guess_category
 
 
 @dataclass
@@ -33,23 +34,6 @@ class DebateResult:
     proposer_agent_id: str = ""
     challenger_agent_id: str = ""
     hypothesis_ids: list[str] = field(default_factory=list)
-
-
-def _guess_category(text: str) -> str:
-    text = text.lower()
-    keywords = {
-        "regularization": ["weight decay", "wd", "dropout", "label smooth"],
-        "normalization": ["norm", "rmsnorm"],
-        "attention": ["attention", "head", "window", "rope", "qk", "gqa", "softcap"],
-        "optimizer": ["muon", "adam", "momentum"],
-        "schedule": ["warmdown", "warmup", "lr", "decay", "cooldown"],
-        "architecture": ["depth", "dim", "mlp", "expansion", "token shift", "activation"],
-        "training_loop": ["batch", "compile", "seed"],
-    }
-    for cat, words in keywords.items():
-        if any(w in text for w in words):
-            return cat
-    return "hyperparameter"
 
 
 def _write_agents_to_graph(client: MemgraphClient, config: DebateConfig) -> tuple[str, str]:
@@ -88,32 +72,25 @@ def _write_challenge_to_graph(
     hypothesis: Hypothesis,
     reason: str,
     round_num: int,
-    evidence_cited: list[int] | None = None,
 ) -> str:
-    # write the challenge edge: challenger -> hypothesis
-    edge = Challenged(
-        source=hypothesis.id,  # on the hypothesis
-        target=hypothesis.id,  # self-referencing for now, challenger is in the reason
-        reason=reason[:500],  # truncate to avoid huge edges
-        round=round_num,
-        evidence_cited=evidence_cited or [],
-    )
-    # use raw cypher to link challenger agent to hypothesis
+    # write challenge edge: challenger agent -> hypothesis
+    edge_id = str(uuid4())
     client._run(
         """
         MATCH (h:Hypothesis {id: $hid})
         MATCH (a:Agent {id: $aid})
-        CREATE (a)-[r:CHALLENGED {reason: $reason, round: $round}]->(h)
+        CREATE (a)-[r:CHALLENGED {id: $eid, reason: $reason, round: $round}]->(h)
         RETURN type(r) AS t
         """,
         {
             "hid": str(hypothesis.id),
             "aid": challenger_agent_id,
+            "eid": edge_id,
             "reason": reason[:500],
             "round": round_num,
         },
     )
-    return str(edge.id)
+    return edge_id
 
 
 def _write_refinement_to_graph(

@@ -220,69 +220,67 @@ def run_loop(max_iterations: int = 100, config: DebateConfig | None = None):
     if config is None:
         config = DebateConfig()
 
-    client = MemgraphClient()
+    with MemgraphClient() as client:
+        for i in range(max_iterations):
+            print(f"\n{'='*60}")
+            print(f"iteration {i + 1}/{max_iterations}")
+            print(f"{'='*60}\n")
 
-    for i in range(max_iterations):
-        print(f"\n{'='*60}")
-        print(f"iteration {i + 1}/{max_iterations}")
-        print(f"{'='*60}\n")
+            # get current best
+            best = client.get_best()
+            prev_best_bpb = best["val_bpb"] if best else 1.0
+            print(f"current best: {prev_best_bpb:.6f}")
 
-        # get current best
-        best = client.get_best()
-        prev_best_bpb = best["val_bpb"] if best else 1.0
-        print(f"current best: {prev_best_bpb:.6f}")
+            # run debate
+            print("\nstarting debate...")
+            debate_result = run_debate(client, config)
+            decision = debate_result.decision
 
-        # run debate
-        print("\nstarting debate...")
-        debate_result = run_debate(client, config)
-        decision = debate_result.decision
+            print(f"\ndecision: run={decision.get('run', False)} confidence={decision.get('confidence', 0)}")
+            print(f"  {decision.get('change_summary', '?')}")
 
-        print(f"\ndecision: run={decision.get('run', False)} confidence={decision.get('confidence', 0)}")
-        print(f"  {decision.get('change_summary', '?')}")
+            if not decision.get("run", False):
+                print("debate rejected this experiment, trying again...")
+                continue
 
-        if not decision.get("run", False):
-            print("debate rejected this experiment, trying again...")
-            continue
+            # get the hypothesis id for linking
+            hypothesis_id = debate_result.hypothesis_ids[-1] if debate_result.hypothesis_ids else None
 
-        # get the hypothesis id for linking
-        hypothesis_id = debate_result.hypothesis_ids[-1] if debate_result.hypothesis_ids else None
+            # TODO: actually modify train.py based on decision
+            # for now this is manual — the decision tells you what to change
+            print(f"\n>>> modify train.py: {decision.get('change_summary', '?')}")
+            print(f">>> parameters: {json.dumps(decision.get('parameters_changed', {}), indent=2)}")
+            print("\nwaiting for you to make the change and press enter...")
 
-        # TODO: actually modify train.py based on decision
-        # for now this is manual — the decision tells you what to change
-        print(f"\n>>> modify train.py: {decision.get('change_summary', '?')}")
-        print(f">>> parameters: {json.dumps(decision.get('parameters_changed', {}), indent=2)}")
-        print("\nwaiting for you to make the change and press enter...")
+            try:
+                input("press enter when train.py is ready (or ctrl+c to stop)...")
+            except KeyboardInterrupt:
+                print("\nstopped by user")
+                break
 
-        try:
-            input("press enter when train.py is ready (or ctrl+c to stop)...")
-        except KeyboardInterrupt:
-            print("\nstopped by user")
-            break
+            # commit the change
+            subprocess.run(
+                ["git", "add", "train.py"],
+                cwd=REPO_ROOT,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", f"experiment {_get_next_experiment_id(client)}: {decision.get('change_summary', 'unknown')}"],
+                cwd=REPO_ROOT,
+            )
 
-        # commit the change
-        subprocess.run(
-            ["git", "add", "train.py"],
-            cwd=REPO_ROOT,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", f"experiment {_get_next_experiment_id(client)}: {decision.get('change_summary', 'unknown')}"],
-            cwd=REPO_ROOT,
-        )
+            # run the experiment
+            run_result = run_experiment(decision)
 
-        # run the experiment
-        run_result = run_experiment(decision)
+            # record result to graph + tsv
+            _, status = _record_result(client, decision, run_result, hypothesis_id, prev_best_bpb)
 
-        # record result to graph + tsv
-        exp, status = _record_result(client, decision, run_result, hypothesis_id, prev_best_bpb)
+            # if it didn't improve, revert
+            if status != Status.keep:
+                print("reverting train.py...")
+                subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=REPO_ROOT)
 
-        # if it didn't improve, revert
-        if status != Status.keep:
-            print("reverting train.py...")
-            subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=REPO_ROOT)
+            print(f"\niteration {i + 1} complete: {status.value}")
 
-        print(f"\niteration {i + 1} complete: {status.value}")
-
-    client.close()
     print("\nloop finished")
 
 
