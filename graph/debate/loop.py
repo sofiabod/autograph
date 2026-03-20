@@ -1,6 +1,5 @@
 """autonomous experiment loop: debate → run → record → repeat."""
 
-import json
 import subprocess
 import re
 from datetime import UTC, datetime
@@ -9,8 +8,8 @@ from pathlib import Path
 from graph.db import MemgraphClient
 from uuid import UUID
 
-from graph.models.nodes import Experiment, Result
-from graph.models.edges import Produced, ImprovedFrom, FailedFrom
+from graph.models.nodes import Experiment, Result, Run
+from graph.models.edges import Produced, ImprovedFrom, FailedFrom, PartOf
 from graph.models.types import Status, Category
 from graph.debate.config import DebateConfig
 from graph.debate.debate import run_debate
@@ -18,8 +17,58 @@ from graph.ingest import _guess_category
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+TRAIN_PY = REPO_ROOT / "train.py"
 RESULTS_TSV = REPO_ROOT / "results" / "baseline" / "results.tsv"
 RUN_LOG = REPO_ROOT / "run.log"
+
+# hyperparameter names that are safe to auto-modify in train.py
+ALLOWED_PARAMS = {
+    "ASPECT_RATIO", "HEAD_DIM", "WINDOW_PATTERN",
+    "TOTAL_BATCH_SIZE", "EMBEDDING_LR", "UNEMBEDDING_LR",
+    "MATRIX_LR", "SCALAR_LR", "WEIGHT_DECAY", "ADAM_BETAS",
+    "WARMUP_RATIO", "WARMDOWN_RATIO", "FINAL_LR_FRAC",
+    "DEPTH", "DEVICE_BATCH_SIZE",
+}
+
+
+def _apply_parameters(parameters_changed: dict) -> list[str]:
+    """auto-modify train.py hyperparameters based on debate decision.
+    returns list of changes applied, or raises if something looks wrong."""
+    if not parameters_changed:
+        return []
+
+    text = TRAIN_PY.read_text()
+    changes = []
+
+    for param, values in parameters_changed.items():
+        param_upper = param.upper()
+        if param_upper not in ALLOWED_PARAMS:
+            print(f"  skipping {param} — not in allowed params")
+            continue
+
+        new_val = str(values.get("to", ""))
+        if not new_val:
+            continue
+
+        # match lines like: MATRIX_LR = 0.04  or DEPTH = 8  (with optional comment)
+        pattern = rf'^({param_upper}\s*=\s*)(.+?)(\s*#.*)?$'
+        match = re.search(pattern, text, re.MULTILINE)
+        if not match:
+            print(f"  skipping {param_upper} — not found in train.py")
+            continue
+
+        old_val = match.group(2).strip()
+        old_line = match.group(0)
+        comment = match.group(3) or ""
+        new_line = f"{match.group(1)}{new_val}{comment}"
+        text = text.replace(old_line, new_line, 1)
+        changes.append(f"{param_upper}: {old_val} -> {new_val}")
+        print(f"  {param_upper}: {old_val} -> {new_val}")
+
+    if changes:
+        TRAIN_PY.write_text(text)
+
+    return changes
 
 
 def _parse_run_log(log_path: Path) -> dict | None:
@@ -71,6 +120,7 @@ def _record_result(
     run_result: dict | None,
     hypothesis_id: str | None,
     prev_best_bpb: float,
+    run_id: str | None = None,
 ) -> tuple[Experiment, Status]:
     """write experiment result back to memgraph and results.tsv."""
     exp_id = _get_next_experiment_id(client)
@@ -112,6 +162,10 @@ def _record_result(
         tokens_trained_m=run_result.get("tokens_trained_m", 0.0) if run_result else 0.0,
     )
     client.create_experiment(exp)
+
+    # link experiment to run session
+    if run_id:
+        client.create_edge(PartOf(source=exp.id, target=UUID(run_id)))
 
     # create result node
     if crashed:
@@ -220,7 +274,14 @@ def run_loop(max_iterations: int = 100, config: DebateConfig | None = None):
     if config is None:
         config = DebateConfig()
 
+    program_md = REPO_ROOT / "program.md"
+
     with MemgraphClient() as client:
+        # create a run node to group this session's experiments
+        run = Run(name=f"debate-loop-{datetime.now(UTC).strftime('%Y%m%d-%H%M')}")
+        run_id = client.create_run(run)
+        print(f"started run: {run.name}")
+
         for i in range(max_iterations):
             print(f"\n{'='*60}")
             print(f"iteration {i + 1}/{max_iterations}")
@@ -246,17 +307,14 @@ def run_loop(max_iterations: int = 100, config: DebateConfig | None = None):
             # get the hypothesis id for linking
             hypothesis_id = debate_result.hypothesis_ids[-1] if debate_result.hypothesis_ids else None
 
-            # TODO: actually modify train.py based on decision
-            # for now this is manual — the decision tells you what to change
-            print(f"\n>>> modify train.py: {decision.get('change_summary', '?')}")
-            print(f">>> parameters: {json.dumps(decision.get('parameters_changed', {}), indent=2)}")
-            print("\nwaiting for you to make the change and press enter...")
+            # auto-modify train.py based on debate decision
+            params = decision.get("parameters_changed", {})
+            print(f"\napplying changes: {decision.get('change_summary', '?')}")
+            changes = _apply_parameters(params)
 
-            try:
-                input("press enter when train.py is ready (or ctrl+c to stop)...")
-            except KeyboardInterrupt:
-                print("\nstopped by user")
-                break
+            if not changes:
+                print("no parameter changes to apply, skipping experiment")
+                continue
 
             # commit the change
             subprocess.run(
@@ -272,12 +330,15 @@ def run_loop(max_iterations: int = 100, config: DebateConfig | None = None):
             run_result = run_experiment(decision)
 
             # record result to graph + tsv
-            _, status = _record_result(client, decision, run_result, hypothesis_id, prev_best_bpb)
+            _, status = _record_result(client, decision, run_result, hypothesis_id, prev_best_bpb, run_id)
 
             # if it didn't improve, revert
             if status != Status.keep:
                 print("reverting train.py...")
                 subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=REPO_ROOT)
+                # restore program.md which gets wiped by reset
+                if not program_md.exists():
+                    subprocess.run(["git", "checkout", "master", "--", "program.md"], cwd=REPO_ROOT)
 
             print(f"\niteration {i + 1} complete: {status.value}")
 
