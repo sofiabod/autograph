@@ -1,10 +1,11 @@
 import json
+from uuid import uuid4
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
 
 from graph.db import MemgraphClient
 from graph.models.nodes import Hypothesis, Agent
-from graph.models.edges import Challenged, Refines, Tested
+from graph.models.edges import Challenged, Refines
 from graph.models.types import HypothesisStatus, Category
 from graph.debate.config import DebateConfig
 from graph.debate.agents import Proposer, Challenger
@@ -157,10 +158,10 @@ def _write_debate_log_to_graph(
     for r in debate_result.rounds:
         rounds_summary.append({
             "round": r.round_num,
-            "proposal": r.proposal[:200],
-            "challenge": r.challenge[:200],
-            "rebuttal": r.rebuttal[:200],
-            "assessment": r.assessment[:200],
+            "proposal": r.proposal,
+            "challenge": r.challenge,
+            "rebuttal": r.rebuttal,
+            "assessment": r.assessment,
         })
 
     client._run(
@@ -177,7 +178,7 @@ def _write_debate_log_to_graph(
         })
         """,
         {
-            "id": str(debate_result.hypothesis_ids[0]) if debate_result.hypothesis_ids else "",
+            "id": str(uuid4()),
             "run": decision.get("run", False),
             "hypothesis": decision.get("hypothesis", ""),
             "change_summary": decision.get("change_summary", ""),
@@ -298,12 +299,41 @@ def _build_challenger_context(client: MemgraphClient, proposal: str) -> str:
         for c in contradictions
     )
 
+    # keyword search — pull experiments matching key terms in the proposal
+    # this catches cases the category/technique matching misses
+    keywords = [w for w in proposal_lower.split() if len(w) > 4 and w not in ("should", "would", "could", "might", "based", "since", "after", "before", "their", "these", "those", "which", "about", "other")]
+    similar_experiments = []
+    seen_ids = set()
+    for kw in keywords[:8]:
+        for exp in client.search_experiments(kw):
+            if exp["experiment_id"] not in seen_ids:
+                seen_ids.add(exp["experiment_id"])
+                similar_experiments.append(exp)
+    similar_str = "\n".join(
+        f"  #{e['experiment_id']} {e['status']} val_bpb={e['val_bpb']:.6f} — {e['change_summary']}"
+        for e in similar_experiments[:15]
+    )
+
+    # previous debates so challenger knows what was already proposed
+    prev_debates = client._run("""
+        MATCH (d:DebateLog)
+        RETURN d.change_summary AS change, d.run_decision AS ran,
+               d.confidence AS conf, d.reasoning AS reason
+        ORDER BY d.created_at DESC
+    """)
+    prev_debates_str = "\n".join(
+        f"  {'ran' if d['ran'] else 'skipped'} (conf={d['conf']:.1f}): {d['change']} — {d['reason'][:100]}"
+        for d in prev_debates
+    ) if prev_debates else "none"
+
     return CHALLENGER_INITIAL.format(
         proposal=proposal,
         category_history=category_str or "none",
         technique_history=technique_str or "none",
+        similar_experiments=similar_str or "none",
         failed_experiments=failed_str or "none",
         contradictions=contradictions_str or "none",
+        previous_debates=prev_debates_str,
     )
 
 
