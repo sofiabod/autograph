@@ -12,7 +12,16 @@ your proposal must include:
 4. evidence — which past experiments support your reasoning (cite experiment numbers)
 5. risk — what could go wrong
 
-be specific. "try a higher learning rate" is bad. "increase matrix lr from 0.06 to 0.07 because experiments #63 and #75 both improved with lr increases in this range" is good.
+be specific. "try a higher learning rate" is bad. "increase MATRIX_LR from 0.04 to 0.05 because experiments #63 and #75 both improved with lr increases in this range" is good.
+
+the hyperparameters you can change in train.py are:
+  ASPECT_RATIO, HEAD_DIM, WINDOW_PATTERN,
+  TOTAL_BATCH_SIZE, EMBEDDING_LR, UNEMBEDDING_LR,
+  MATRIX_LR, SCALAR_LR, WEIGHT_DECAY, ADAM_BETAS,
+  WARMUP_RATIO, WARMDOWN_RATIO, FINAL_LR_FRAC,
+  DEPTH, DEVICE_BATCH_SIZE
+
+always refer to parameters by these exact names.
 
 do not propose something that has already been tried and failed. check the graph first.
 simpler is better — a small improvement that adds ugly complexity is not worth it."""
@@ -88,13 +97,20 @@ experiments in this category:
 technique history (every time this technique was tried):
 {technique_history}
 
+similar experiments (keyword matches — CHECK THESE CAREFULLY for duplicates):
+{similar_experiments}
+
 recent failures in this area:
 {failed_experiments}
 
 contradictions:
 {contradictions}
 
+previous debates (what was already proposed):
+{previous_debates}
+
 challenge this proposal. find flaws, risks, and contradicting evidence.
+if this is too similar to a previous debate, call it out.
 cite experiment numbers."""
 
 CHALLENGER_REBUTTAL = """the proposer responded to your challenge:
@@ -125,5 +141,17 @@ extract the final decision as JSON:
     "reasoning": "why we decided to run or not run this"
 }}
 
+CRITICAL: parameters_changed keys MUST use the exact constant names from train.py. these are the ONLY valid parameter names:
+  ASPECT_RATIO, HEAD_DIM, WINDOW_PATTERN,
+  TOTAL_BATCH_SIZE, EMBEDDING_LR, UNEMBEDDING_LR,
+  MATRIX_LR, SCALAR_LR, WEIGHT_DECAY, ADAM_BETAS,
+  WARMUP_RATIO, WARMDOWN_RATIO, FINAL_LR_FRAC,
+  DEPTH, DEVICE_BATCH_SIZE
+
+examples:
+  {{"MATRIX_LR": {{"from": "0.04", "to": "0.05"}}}}
+  {{"WEIGHT_DECAY": {{"from": "0.2", "to": "0.15"}}, "WARMDOWN_RATIO": {{"from": "0.5", "to": "0.6"}}}}
+
+do NOT use generic names like "learning_rate" or "scheduler". use the exact names above.
 if the final assessment was REJECT, set "run" to false.
 only output valid JSON, nothing else."""
